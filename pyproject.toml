@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hetu-online"
+version = "0.1.0"
+description = "CotGen/CotCond LoRA SFT training on top of LLaMA-Factory: train a model to answer either by imitating teacher reasoning directly, or by learning to answer well conditioned on its own self-generated reasoning."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Adarsh Singh" }]
+dependencies = []
+
+[project.optional-dependencies]
+llamafactory = ["llamafactory"]
+
+[project.scripts]
+hetu-online = "hetu_online.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hetu_online = ["sitecustomize.py"]
