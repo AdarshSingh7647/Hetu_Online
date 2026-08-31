@@ -70,19 +70,40 @@ def make_conversation(human: str, gpt: str, system: str) -> Dict[str, Any]:
     }
 
 
-def build_think_response(thinking: str, answer: str) -> str:
+DEFAULT_THINK_OPEN = "<think>\n"
+DEFAULT_THINK_CLOSE = "\n</think>\n\n"
+
+
+def build_think_response(
+    thinking: str,
+    answer: str,
+    think_open: str = DEFAULT_THINK_OPEN,
+    think_close: str = DEFAULT_THINK_CLOSE,
+) -> str:
+    """think_open/think_close default to Qwen3/DeepSeek's tags. A model
+    family with different reasoning-span delimiters (e.g. Gemma-4's
+    "<|channel>thought\\n" / "<channel|>") must pass its own pair here --
+    these MUST match whatever HETU_THINK_OPEN_TAG/HETU_THINK_CLOSE_TAG are
+    set to at train time (see sitecustomize.py), or CotCond's masking will
+    silently fail to find the tags and fail open to full supervision with
+    no error."""
     thinking = thinking.strip()
     answer = answer.strip()
-    return f"<think>\n{thinking}\n</think>\n\n{answer}"
+    return f"{think_open}{thinking}{think_close}{answer}"
 
 
-def build_examples(raw: List[Dict[str, Any]], system_prompt: str) -> List[Dict[str, Any]]:
+def build_examples(
+    raw: List[Dict[str, Any]],
+    system_prompt: str,
+    think_open: str = DEFAULT_THINK_OPEN,
+    think_close: str = DEFAULT_THINK_CLOSE,
+) -> List[Dict[str, Any]]:
     """cotgen and cotcond share this exact same shape -- see module
     docstring for why the distinction lives entirely in the training-time
     loss mask, not in the data."""
     out = []
     for ex in raw:
-        response = build_think_response(ex["thinking"], ex["answer"])
+        response = build_think_response(ex["thinking"], ex["answer"], think_open, think_close)
         out.append(make_conversation(ex["prompt"], response, system_prompt))
     return out
 
@@ -152,6 +173,8 @@ def build_cot_data(
     val_fraction: float = 0.02,
     system_prompt: str = "You are a careful, helpful assistant.",
     seed: int = 12345,
+    think_open: str = DEFAULT_THINK_OPEN,
+    think_close: str = DEFAULT_THINK_CLOSE,
 ) -> Dict[str, str]:
     """Core entry point (importable, used by the CLI). Returns the dict of
     registered dataset key -> written file path."""
@@ -161,8 +184,8 @@ def build_cot_data(
     else:
         train_raw, val_raw = split_val(train_raw, val_fraction, seed)
 
-    train_examples = build_examples(train_raw, system_prompt)
-    val_examples = build_examples(val_raw, system_prompt)
+    train_examples = build_examples(train_raw, system_prompt, think_open, think_close)
+    val_examples = build_examples(val_raw, system_prompt, think_open, think_close)
 
     written: Dict[str, str] = {}
     for mode in MODES:

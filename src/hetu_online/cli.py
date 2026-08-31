@@ -33,10 +33,22 @@ def _add_build_data_parser(subparsers) -> None:
     p.add_argument("--llamafactory_data_dir", required=True, help="Path to LLaMA-Factory/data.")
     p.add_argument("--system_prompt", default="You are a careful, helpful assistant.")
     p.add_argument("--seed", type=int, default=12345)
+    p.add_argument(
+        "--think_open", default=None,
+        help="Reasoning-span open tag written into the gpt turn. Default: '<think>\\n' "
+        "(Qwen3/DeepSeek). Must match --think_open_tag passed to `hetu-online train`.",
+    )
+    p.add_argument(
+        "--think_close", default=None,
+        help="Reasoning-span close tag written into the gpt turn. Default: '\\n</think>\\n\\n' "
+        "(Qwen3/DeepSeek). Must match --think_close_tag passed to `hetu-online train`.",
+    )
     p.set_defaults(func=_run_build_data)
 
 
 def _run_build_data(args: argparse.Namespace) -> int:
+    from .data_builder import DEFAULT_THINK_CLOSE, DEFAULT_THINK_OPEN
+
     written = build_cot_data(
         input_path=args.input,
         out_dir=args.out_dir,
@@ -46,6 +58,8 @@ def _run_build_data(args: argparse.Namespace) -> int:
         val_fraction=args.val_fraction,
         system_prompt=args.system_prompt,
         seed=args.seed,
+        think_open=args.think_open if args.think_open is not None else DEFAULT_THINK_OPEN,
+        think_close=args.think_close if args.think_close is not None else DEFAULT_THINK_CLOSE,
     )
     print("\n[hetu-online] Done. Registered dataset keys:")
     for key in written:
@@ -103,10 +117,31 @@ def _add_train_parser(subparsers) -> None:
     p = subparsers.add_parser(
         "train",
         help="Launch llamafactory-cli with the right PYTHONPATH/env var for the given mode.",
+        description=(
+            "IMPORTANT: --think_open_tag/--think_close_tag (and any other optional flag "
+            "this command grows in the future) MUST be given BEFORE the positional args "
+            "(dataset_name mode config_path), e.g. "
+            "`hetu-online train --think_open_tag X --think_close_tag Y my_dataset cotcond cfg.yaml`. "
+            "extra_args uses argparse.REMAINDER, which greedily captures everything after the "
+            "first positional -- a flag placed after config_path silently lands in extra_args "
+            "(passed through to llamafactory-cli, which ignores it) instead of erroring."
+        ),
     )
     p.add_argument("dataset_name", help="Task/dataset tag (used only for the log line).")
     p.add_argument("mode", choices=["cotgen", "cotcond"])
     p.add_argument("config_path", help="Path to the YAML config (from make-config).")
+    p.add_argument(
+        "--think_open_tag", default=None,
+        help="Overrides HETU_THINK_OPEN_TAG for CotCond masking. Only needed for a model "
+        "family whose think-block delimiters differ from '<think>' (e.g. Gemma-4's "
+        "'<|channel>thought\\n'). Must match the tag data-builder actually wrote. "
+        "MUST be given before the positional args -- see this command's description.",
+    )
+    p.add_argument(
+        "--think_close_tag", default=None,
+        help="Overrides HETU_THINK_CLOSE_TAG for CotCond masking. See --think_open_tag "
+        "(including the positional-argument-ordering requirement).",
+    )
     p.add_argument("extra_args", nargs=argparse.REMAINDER,
                     help="Extra args passed through to llamafactory-cli train.")
     p.set_defaults(func=_run_train)
@@ -118,6 +153,8 @@ def _run_train(args: argparse.Namespace) -> int:
         mode=args.mode,
         config_path=args.config_path,
         extra_args=args.extra_args,
+        think_open_tag=args.think_open_tag,
+        think_close_tag=args.think_close_tag,
     )
 
 

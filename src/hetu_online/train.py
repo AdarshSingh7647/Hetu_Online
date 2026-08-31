@@ -32,7 +32,17 @@ def run_training(
     mode: str,
     config_path: str,
     extra_args: Optional[List[str]] = None,
+    think_open_tag: Optional[str] = None,
+    think_close_tag: Optional[str] = None,
 ) -> int:
+    """think_open_tag/think_close_tag: only needed for a model family whose
+    reasoning-span delimiters differ from the sitecustomize.py masking
+    patch's own hardcoded defaults ("<think>", "</think>") -- e.g. Gemma-4's
+    "<|channel>thought\\n"/"<channel|>". Leave both None for Qwen3/DeepSeek
+    (today's default behavior, unaffected by this parameter existing).
+    These MUST match whatever the training data's think-block was actually
+    written with (data_builder.py's think_open/think_close) or CotCond's
+    masking silently fails open to full supervision with no error."""
     if mode not in ("cotgen", "cotcond"):
         raise ValueError(f"mode must be 'cotgen' or 'cotcond', got {mode!r}")
 
@@ -59,6 +69,14 @@ def run_training(
         env.pop("HETU_THINK_CONTENT_MASK", None)
         print(f"[hetu-online] dataset={dataset_name} mode=cotgen -- "
               f"full loss on reasoning+answer, no masking")
+
+    if think_open_tag is not None:
+        env["HETU_THINK_OPEN_TAG"] = think_open_tag
+    if think_close_tag is not None:
+        env["HETU_THINK_CLOSE_TAG"] = think_close_tag
+    if think_open_tag is not None or think_close_tag is not None:
+        print(f"[hetu-online] HETU_THINK_OPEN_TAG={env.get('HETU_THINK_OPEN_TAG')!r} "
+              f"HETU_THINK_CLOSE_TAG={env.get('HETU_THINK_CLOSE_TAG')!r}")
 
     print(f"[hetu-online] config={config_path}")
     print(f"[hetu-online] PYTHONPATH={env['PYTHONPATH']}")
