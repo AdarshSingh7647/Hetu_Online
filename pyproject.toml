@@ -13,7 +13,12 @@ authors = [{ name = "Adarsh Singh" }]
 dependencies = []
 
 [project.optional-dependencies]
+# Training env: `pip install -e .[llamafactory]`.
 llamafactory = ["llamafactory"]
+# Eval env (separate from the trainer env -- see README): `pip install -e .[eval]`.
+# vllm/transformers/torch pin no version here since the right build depends
+# on the machine's own CUDA/driver version (see README's migration notes).
+eval = ["datasets", "vllm", "transformers", "tqdm", "pandas"]
 
 [project.scripts]
 hetu-online = "hetu_online.cli:main"
@@ -22,4 +27,4 @@ hetu-online = "hetu_online.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-hetu_online = ["sitecustomize.py"]
+hetu_online = ["sitecustomize.py", "patches/*.patch"]

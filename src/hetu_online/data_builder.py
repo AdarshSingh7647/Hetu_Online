@@ -38,7 +38,9 @@ from __future__ import annotations
 import json
 import os
 import random
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+from . import model_families
 
 REQUIRED_FIELDS = ["prompt", "thinking", "answer"]
 MODES = ("cotgen", "cotcond")
@@ -169,15 +171,19 @@ def build_cot_data(
     out_dir: str,
     dataset_name: str,
     llamafactory_data_dir: str,
+    model_family: str,
     val_input: str = None,
     val_fraction: float = 0.02,
     system_prompt: str = "You are a careful, helpful assistant.",
     seed: int = 12345,
-    think_open: str = DEFAULT_THINK_OPEN,
-    think_close: str = DEFAULT_THINK_CLOSE,
 ) -> Dict[str, str]:
-    """Core entry point (importable, used by the CLI). Returns the dict of
-    registered dataset key -> written file path."""
+    """Core entry point (importable, used by the CLI). model_family selects
+    the think_open/think_close tags (see model_families.py) -- these MUST
+    match what `hetu-online train`'s masking uses for the same family,
+    which is exactly why this takes model_family instead of raw tag
+    strings: it removes the chance of the two ever disagreeing. Returns
+    the dict of registered dataset key -> written file path."""
+    think_open, think_close = model_families.think_tags(model_family)
     train_raw = load_examples(input_path)
     if val_input:
         val_raw = load_examples(val_input)

@@ -7,12 +7,20 @@ everything else (LoRA rank, batch size, lr, cutoff_len...) is identical.
 CotCond additionally REQUIRES an env var at launch time -- this is NOT a
 YAML key, LLaMA-Factory has no concept of it. `hetu-online train` sets it
 for you automatically based on mode.
+
+`model_family` (see model_families.py) supplies everything that varies
+BETWEEN the two supported model families -- template, freeze_vision_tower/
+freeze_multi_modal_projector, flash_attn, enable_liger_kernel, and the
+default cutoff_len -- so the caller never has to know or re-derive
+Gemma-4's specific YAML requirements by hand.
 """
 
 from __future__ import annotations
 
 import os
 from typing import Optional
+
+from . import model_families
 
 TEMPLATE = """\
 ### model
@@ -26,13 +34,13 @@ finetuning_type: lora
 lora_rank: {lora_rank}
 lora_alpha: {lora_alpha}
 lora_target: all
-
+{freeze_vision_block}
 ### dataset
 dataset: {dataset_name}_{mode}_train
 template: {template}
 enable_thinking: true
 cutoff_len: {cutoff_len}
-overwrite_cache: true
+{flash_attn_block}{liger_kernel_block}overwrite_cache: true
 preprocessing_num_workers: 16
 dataloader_num_workers: 4
 
@@ -85,11 +93,11 @@ def build_config(
     model_path: str,
     output_dir: str,
     mode: str,
+    model_family: str,
     out_config: Optional[str] = None,
-    template: str = "qwen3",
     lora_rank: int = 32,
     lora_alpha: int = 64,
-    cutoff_len: int = 4096,
+    cutoff_len: Optional[int] = None,
     per_device_train_batch_size: int = 4,
     gradient_accumulation_steps: int = 16,
     learning_rate: str = "0.0001",
@@ -101,11 +109,20 @@ def build_config(
     if mode not in ("cotgen", "cotcond"):
         raise ValueError(f"mode must be 'cotgen' or 'cotcond', got {mode!r}")
 
+    family = model_families.get(model_family)
+
     if out_config is None:
         base_dir = configs_dir or os.path.join(os.getcwd(), "configs")
         out_config = os.path.join(base_dir, f"{dataset_name}_{mode}.yaml")
 
     requires_comment = COTCOND_REQUIRES_COMMENT if mode == "cotcond" else COTGEN_COMMENT
+
+    freeze_vision_block = (
+        "freeze_vision_tower: true\nfreeze_multi_modal_projector: true\n"
+        if family.freeze_vision else ""
+    )
+    flash_attn_block = f"flash_attn: {family.flash_attn}\n" if family.flash_attn else ""
+    liger_kernel_block = "enable_liger_kernel: true\n" if family.enable_liger_kernel else ""
 
     content = TEMPLATE.format(
         model_path=model_path,
@@ -113,8 +130,11 @@ def build_config(
         lora_alpha=lora_alpha,
         dataset_name=dataset_name,
         mode=mode,
-        template=template,
-        cutoff_len=cutoff_len,
+        template=family.template,
+        cutoff_len=cutoff_len if cutoff_len is not None else family.default_cutoff_len,
+        freeze_vision_block=freeze_vision_block,
+        flash_attn_block=flash_attn_block,
+        liger_kernel_block=liger_kernel_block,
         output_dir=output_dir,
         save_steps=save_steps,
         per_device_train_batch_size=per_device_train_batch_size,
@@ -133,5 +153,10 @@ def build_config(
     if mode == "cotcond":
         print("[hetu-online] Reminder: this mode needs HETU_THINK_CONTENT_MASK=1 at launch. "
               "Use `hetu-online train` instead of raw llamafactory-cli, or export it yourself.")
+    if family.enable_liger_kernel:
+        print("[hetu-online] Reminder: model_family=gemma4 requires LLaMA-Factory's "
+              "gemma4 liger-kernel dispatch patch (patches/llamafactory_gemma4_liger.patch "
+              "in this package) applied to your LLaMA-Factory checkout, or "
+              "enable_liger_kernel: true silently does nothing.")
 
     return out_config

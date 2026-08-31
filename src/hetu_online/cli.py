@@ -1,9 +1,14 @@
 """
 hetu-online -- CLI entry point.
 
-  hetu-online build-data   ...   # raw {prompt,thinking,answer} -> ShareGPT data for both modes
-  hetu-online make-config  ...   # generate a LLaMA-Factory YAML for one mode
-  hetu-online train        ...   # launch llamafactory-cli with the right env var for the mode
+  hetu-online build-data        ...   # raw {prompt,thinking,answer} -> ShareGPT data for both modes
+  hetu-online make-config       ...   # generate a LLaMA-Factory YAML for one mode
+  hetu-online train             ...   # launch llamafactory-cli with the right env var for the mode
+  hetu-online run-one           ...   # train + log + summarize one (dataset, mode) job in one call
+  hetu-online summarize-training ...  # join every training summary JSON into one CSV
+  hetu-online eval              ...   # run one (checkpoint, benchmark) eval job via vLLM
+  hetu-online build-eval-table  ...   # join training + eval summaries into one wide CSV
+  hetu-online build-pivot-table ...   # print a base/cotgen/cotcond accuracy comparison matrix
 """
 
 from __future__ import annotations
@@ -13,7 +18,30 @@ import sys
 
 from .config_builder import build_config
 from .data_builder import build_cot_data
+from .eval.run_eval import add_eval_arguments, run_eval_from_args
+from .eval.tables import register_table_subcommands
+from .model_families import MODEL_FAMILIES
+from .orchestration.run_one import _add_run_one_parser
+from .orchestration.summarize import _add_summarize_parser
 from .train import run_training
+
+# eval.benchmarks/eval.run_eval/eval.tables only import datasets/
+# transformers/vllm/pandas LAZILY, inside the functions that actually need
+# them (not at module level) -- so importing them here to build the
+# `eval`/`build-eval-table`/`build-pivot-table` subparsers' --help text and
+# argparse choices works even in a trainer-only environment that never
+# installed vLLM.
+
+# CLI-level gate, narrower than MODEL_FAMILIES: gemma4's FamilyConfig,
+# vendored liger patch, and tests all exist in this repo, but gemma4
+# training hasn't completed a validated end-to-end run on real GPU
+# hardware yet (see model_families.py for the template/tag facts already
+# verified from source -- what's NOT yet verified is that a full training
+# run actually succeeds with them). Blocking it here, one line, rather
+# than in model_families.py itself, means re-enabling it after GPU
+# validation is exactly that -- flipping this tuple back to
+# MODEL_FAMILIES -- with no other code changes required.
+CLI_ENABLED_MODEL_FAMILIES = ("qwen3",)
 
 
 def _add_build_data_parser(subparsers) -> None:
@@ -31,41 +59,35 @@ def _add_build_data_parser(subparsers) -> None:
     p.add_argument("--out_dir", required=True, help="Where to write the *_cotgen_*/*_cotcond_* JSON files.")
     p.add_argument("--dataset_name", required=True, help="Short task tag, e.g. 'my_task'.")
     p.add_argument("--llamafactory_data_dir", required=True, help="Path to LLaMA-Factory/data.")
+    p.add_argument(
+        "--model_family", required=True, choices=CLI_ENABLED_MODEL_FAMILIES,
+        help="Selects the reasoning-span tags written into the data ('<think>' for qwen3, "
+        "'<|channel>thought' for gemma4). MUST match --model_family passed to "
+        "`hetu-online train`, or CotCond's masking silently fails open to full supervision.",
+    )
     p.add_argument("--system_prompt", default="You are a careful, helpful assistant.")
     p.add_argument("--seed", type=int, default=12345)
-    p.add_argument(
-        "--think_open", default=None,
-        help="Reasoning-span open tag written into the gpt turn. Default: '<think>\\n' "
-        "(Qwen3/DeepSeek). Must match --think_open_tag passed to `hetu-online train`.",
-    )
-    p.add_argument(
-        "--think_close", default=None,
-        help="Reasoning-span close tag written into the gpt turn. Default: '\\n</think>\\n\\n' "
-        "(Qwen3/DeepSeek). Must match --think_close_tag passed to `hetu-online train`.",
-    )
     p.set_defaults(func=_run_build_data)
 
 
 def _run_build_data(args: argparse.Namespace) -> int:
-    from .data_builder import DEFAULT_THINK_CLOSE, DEFAULT_THINK_OPEN
-
     written = build_cot_data(
         input_path=args.input,
         out_dir=args.out_dir,
         dataset_name=args.dataset_name,
         llamafactory_data_dir=args.llamafactory_data_dir,
+        model_family=args.model_family,
         val_input=args.val_input,
         val_fraction=args.val_fraction,
         system_prompt=args.system_prompt,
         seed=args.seed,
-        think_open=args.think_open if args.think_open is not None else DEFAULT_THINK_OPEN,
-        think_close=args.think_close if args.think_close is not None else DEFAULT_THINK_CLOSE,
     )
     print("\n[hetu-online] Done. Registered dataset keys:")
     for key in written:
         print(f"  - {key}")
     print(f"\nNext: hetu-online make-config --dataset_name {args.dataset_name} "
-          f"--model_path <path> --output_dir <dir> --mode cotgen   (or cotcond)")
+          f"--model_family {args.model_family} --model_path <path> --output_dir <dir> "
+          f"--mode cotgen   (or cotcond)")
     return 0
 
 
@@ -78,11 +100,21 @@ def _add_make_config_parser(subparsers) -> None:
     p.add_argument("--model_path", required=True, help="Local path or HF repo id of the base model.")
     p.add_argument("--output_dir", required=True, help="Checkpoint output dir for this run.")
     p.add_argument("--mode", required=True, choices=["cotgen", "cotcond"])
-    p.add_argument("--template", default="qwen3", help="LLaMA-Factory chat template name (qwen3, glm4, llama3, ...).")
+    p.add_argument(
+        "--model_family", required=True, choices=CLI_ENABLED_MODEL_FAMILIES,
+        help="Selects the validated template + freeze/flash_attn/liger/cutoff_len settings "
+        "for this family (see model_families.py). MUST match --model_family used in "
+        "build-data for this --dataset_name.",
+    )
     p.add_argument("--out_config", default=None, help="Where to write the YAML. Default: ./configs/<dataset_name>_<mode>.yaml")
     p.add_argument("--lora_rank", type=int, default=32)
     p.add_argument("--lora_alpha", type=int, default=64)
-    p.add_argument("--cutoff_len", type=int, default=4096)
+    p.add_argument(
+        "--cutoff_len", type=int, default=None,
+        help="Overrides the model_family's validated default cutoff_len. Leave unset unless "
+        "you have a specific reason -- the default was tuned per family (e.g. Gemma-4's "
+        "28672 vs Qwen3's 32768) against real tokenized data length and GPU memory.",
+    )
     p.add_argument("--per_device_train_batch_size", type=int, default=4)
     p.add_argument("--gradient_accumulation_steps", type=int, default=16)
     p.add_argument("--learning_rate", default="0.0001")
@@ -98,8 +130,8 @@ def _run_make_config(args: argparse.Namespace) -> int:
         model_path=args.model_path,
         output_dir=args.output_dir,
         mode=args.mode,
+        model_family=args.model_family,
         out_config=args.out_config,
-        template=args.template,
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         cutoff_len=args.cutoff_len,
@@ -118,10 +150,10 @@ def _add_train_parser(subparsers) -> None:
         "train",
         help="Launch llamafactory-cli with the right PYTHONPATH/env var for the given mode.",
         description=(
-            "IMPORTANT: --think_open_tag/--think_close_tag (and any other optional flag "
-            "this command grows in the future) MUST be given BEFORE the positional args "
-            "(dataset_name mode config_path), e.g. "
-            "`hetu-online train --think_open_tag X --think_close_tag Y my_dataset cotcond cfg.yaml`. "
+            "IMPORTANT: --model_family (and any other optional flag this command grows in "
+            "the future) MUST be given BEFORE the positional args (dataset_name mode "
+            "config_path), e.g. "
+            "`hetu-online train --model_family gemma4 my_dataset cotcond cfg.yaml`. "
             "extra_args uses argparse.REMAINDER, which greedily captures everything after the "
             "first positional -- a flag placed after config_path silently lands in extra_args "
             "(passed through to llamafactory-cli, which ignores it) instead of erroring."
@@ -131,16 +163,11 @@ def _add_train_parser(subparsers) -> None:
     p.add_argument("mode", choices=["cotgen", "cotcond"])
     p.add_argument("config_path", help="Path to the YAML config (from make-config).")
     p.add_argument(
-        "--think_open_tag", default=None,
-        help="Overrides HETU_THINK_OPEN_TAG for CotCond masking. Only needed for a model "
-        "family whose think-block delimiters differ from '<think>' (e.g. Gemma-4's "
-        "'<|channel>thought\\n'). Must match the tag data-builder actually wrote. "
-        "MUST be given before the positional args -- see this command's description.",
-    )
-    p.add_argument(
-        "--think_close_tag", default=None,
-        help="Overrides HETU_THINK_CLOSE_TAG for CotCond masking. See --think_open_tag "
-        "(including the positional-argument-ordering requirement).",
+        "--model_family", required=True, choices=CLI_ENABLED_MODEL_FAMILIES,
+        help="Selects HETU_THINK_OPEN_TAG/HETU_THINK_CLOSE_TAG for CotCond masking. MUST "
+        "match --model_family used in build-data for this dataset, or masking silently "
+        "fails open to full supervision. MUST be given before the positional args -- see "
+        "this command's description.",
     )
     p.add_argument("extra_args", nargs=argparse.REMAINDER,
                     help="Extra args passed through to llamafactory-cli train.")
@@ -152,10 +179,18 @@ def _run_train(args: argparse.Namespace) -> int:
         dataset_name=args.dataset_name,
         mode=args.mode,
         config_path=args.config_path,
+        model_family=args.model_family,
         extra_args=args.extra_args,
-        think_open_tag=args.think_open_tag,
-        think_close_tag=args.think_close_tag,
     )
+
+
+def _add_eval_parser(subparsers) -> None:
+    p = subparsers.add_parser(
+        "eval",
+        help="Run one (checkpoint, benchmark) eval job via vLLM.",
+    )
+    add_eval_arguments(p)
+    p.set_defaults(func=run_eval_from_args)
 
 
 def main(argv=None) -> int:
@@ -166,6 +201,10 @@ def main(argv=None) -> int:
     _add_build_data_parser(subparsers)
     _add_make_config_parser(subparsers)
     _add_train_parser(subparsers)
+    _add_run_one_parser(subparsers)
+    _add_summarize_parser(subparsers)
+    _add_eval_parser(subparsers)
+    register_table_subcommands(subparsers)
 
     args = parser.parse_args(argv)
     return args.func(args)

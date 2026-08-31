@@ -20,6 +20,8 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
+from . import model_families
+
 
 def _patches_dir() -> str:
     """Directory containing sitecustomize.py, regardless of how this
@@ -31,20 +33,22 @@ def run_training(
     dataset_name: str,
     mode: str,
     config_path: str,
+    model_family: str,
     extra_args: Optional[List[str]] = None,
-    think_open_tag: Optional[str] = None,
-    think_close_tag: Optional[str] = None,
 ) -> int:
-    """think_open_tag/think_close_tag: only needed for a model family whose
-    reasoning-span delimiters differ from the sitecustomize.py masking
-    patch's own hardcoded defaults ("<think>", "</think>") -- e.g. Gemma-4's
-    "<|channel>thought\\n"/"<channel|>". Leave both None for Qwen3/DeepSeek
-    (today's default behavior, unaffected by this parameter existing).
+    """model_family (see model_families.py) supplies the reasoning-span
+    open/close tags for CotCond's masking patch -- Qwen3 uses
+    "<think>"/"</think>", Gemma-4 uses "<|channel>thought\\n"/"<channel|>".
     These MUST match whatever the training data's think-block was actually
-    written with (data_builder.py's think_open/think_close) or CotCond's
-    masking silently fails open to full supervision with no error."""
+    written with (data_builder.py's build_cot_data, given the SAME
+    model_family) or CotCond's masking silently fails open to full
+    supervision with no error -- which is exactly why this takes
+    model_family instead of raw tag strings: the two call sites can no
+    longer disagree."""
     if mode not in ("cotgen", "cotcond"):
         raise ValueError(f"mode must be 'cotgen' or 'cotcond', got {mode!r}")
+
+    think_open_tag, think_close_tag = model_families.think_tags(model_family)
 
     if not os.path.isfile(config_path):
         raise FileNotFoundError(f"config file not found: {config_path}")
@@ -55,6 +59,12 @@ def run_training(
             "(pip install -e /path/to/LLaMA-Factory) and activate the same "
             "environment before running `hetu-online train`."
         )
+
+    if model_family == "gemma4":
+        print("[hetu-online] model_family=gemma4 requires LLaMA-Factory's gemma4 "
+              "liger-kernel dispatch patch (see this package's "
+              "patches/llamafactory_gemma4_liger.patch) -- without it, "
+              "enable_liger_kernel: true in the config silently does nothing.")
 
     env = os.environ.copy()
     patches_dir = _patches_dir()
@@ -70,13 +80,10 @@ def run_training(
         print(f"[hetu-online] dataset={dataset_name} mode=cotgen -- "
               f"full loss on reasoning+answer, no masking")
 
-    if think_open_tag is not None:
-        env["HETU_THINK_OPEN_TAG"] = think_open_tag
-    if think_close_tag is not None:
-        env["HETU_THINK_CLOSE_TAG"] = think_close_tag
-    if think_open_tag is not None or think_close_tag is not None:
-        print(f"[hetu-online] HETU_THINK_OPEN_TAG={env.get('HETU_THINK_OPEN_TAG')!r} "
-              f"HETU_THINK_CLOSE_TAG={env.get('HETU_THINK_CLOSE_TAG')!r}")
+    env["HETU_THINK_OPEN_TAG"] = think_open_tag
+    env["HETU_THINK_CLOSE_TAG"] = think_close_tag
+    print(f"[hetu-online] model_family={model_family} "
+          f"HETU_THINK_OPEN_TAG={think_open_tag!r} HETU_THINK_CLOSE_TAG={think_close_tag!r}")
 
     print(f"[hetu-online] config={config_path}")
     print(f"[hetu-online] PYTHONPATH={env['PYTHONPATH']}")

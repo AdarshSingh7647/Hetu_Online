@@ -1,0 +1,29 @@
+diff --git a/src/llamafactory/model/model_utils/liger_kernel.py b/src/llamafactory/model/model_utils/liger_kernel.py
+index 4f63e10..0e1e02b 100644
+--- a/src/llamafactory/model/model_utils/liger_kernel.py
++++ b/src/llamafactory/model/model_utils/liger_kernel.py
+@@ -46,6 +46,24 @@ def apply_liger_kernel(
+         from liger_kernel.transformers import apply_liger_kernel_to_gemma3 as apply_liger_kernel
+     elif model_type == "gemma3_text":
+         from liger_kernel.transformers import apply_liger_kernel_to_gemma3_text as apply_liger_kernel
++    # LOCAL PATCH (not upstream as of this checkout): gemma4/gemma4_text were
++    # missing from this dispatcher even though liger-kernel itself exports
++    # apply_liger_kernel_to_gemma4{,_text}, so enable_liger_kernel: true
++    # silently fell through to the "does not support liger kernel" warning
++    # below and did nothing. That matters enormously for Gemma-4 at long
++    # context: vocab_size is 262144 (verified from the real config.json), so
++    # the un-fused logits tensor alone is ~15GB in bf16 / ~30GB upcast to
++    # fp32 at cutoff_len=28672 -- which is precisely the allocation that
++    # OOM'd a full 80GB A100 (observed: ~65GB resident, then a failed
++    # ~17-20GB allocation). Liger's fused linear cross-entropy never
++    # materializes that tensor, so this branch is what makes full-sequence
++    # training fit at all. Gradient checkpointing does NOT help here --
++    # logits are an activation of the final projection, not a recomputable
++    # intermediate.
++    elif model_type == "gemma4":
++        from liger_kernel.transformers import apply_liger_kernel_to_gemma4 as apply_liger_kernel
++    elif model_type == "gemma4_text":
++        from liger_kernel.transformers import apply_liger_kernel_to_gemma4_text as apply_liger_kernel
+     elif model_type in ["glm", "glm4"]:  # for glm4-9b, glm4-32B respectively
+         from liger_kernel.transformers import apply_liger_kernel_to_glm4 as apply_liger_kernel
+     elif model_type == "glm4v":
